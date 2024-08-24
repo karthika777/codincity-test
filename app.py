@@ -1,3 +1,4 @@
+import os
 import asyncio
 import gradio as gr
 from nbclient import NotebookClient
@@ -75,4 +76,5 @@ iface = gr.ChatInterface(
 )
  
 if __name__ == "__main__":
-    iface.launch(server_name="localhost", server_port=8000)
+    port = int(os.environ.get('PORT', 8000))  # Default to 8000 if PORT is not set
+    iface.launch(server_name="0.0.0.0", server_port=port)
