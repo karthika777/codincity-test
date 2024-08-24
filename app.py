@@ -76,4 +76,3 @@ iface = gr.ChatInterface(
  
 if __name__ == "__main__":
     iface.launch(server_name="localhost", server_port=8000)
-has context menu
