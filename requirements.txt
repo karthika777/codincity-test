@@ -75,4 +75,4 @@ urllib3==2.2.2
 uvicorn==0.30.6
 websockets==12.0
 zipp==3.20.0
-has context menu
+
