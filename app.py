@@ -1,150 +1,57 @@
+import os
+import asyncio
 import gradio as gr
-from azure.storage.blob import BlobServiceClient
-from llama_index.experimental.query_engine import PandasQueryEngine
-from llama_index.core import Settings
-from llama_index.llms.azure_openai import AzureOpenAI
-from better_profanity import profanity  # Alternative to ProfanityFree
-import pickle
+from nbclient import NotebookClient
+from nbformat import read, v4 as nbf
 import time
-from io import BytesIO
-import pandas as pd
-def pickles_from_blob(connection_string, container_name):
-    try:
-        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-        container_client = blob_service_client.get_container_client(container_name)
-       
-        blobs_list = container_client.list_blobs()
-        
-        data_frames = []
-        
-        for blob in blobs_list:
-            if blob.name.endswith('.pkl'):  
-                blob_client = container_client.get_blob_client(blob.name)
-                
-                blob_stream = BytesIO()
-                blob_client.download_blob().readinto(blob_stream)
-                
-                blob_stream.seek(0)
-          
-                df = pickle.load(blob_stream)
-                data_frames.append(df)
 
-                blob_client.close()
+##asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-        if data_frames:
-            concatenated_df = pd.concat(data_frames, ignore_index=True)
-        else:
-            print("No pickle files found in the container.")
-            concatenated_df = pd.DataFrame()
+cache = {}
+notebook_executed = False
+executed_notebook = None  # To store the state of the executed notebook
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        concatenated_df = pd.DataFrame() 
+def run_notebook(notebook_path, query_str):
+    global notebook_executed, executed_notebook
 
-    finally:
-        container_client.close()
-        blob_service_client.close()
+    # If the notebook has been executed before and the query is in cache, return cached output
+    if notebook_executed and query_str in cache:
+        return cache[query_str]
 
-    return concatenated_df
-connection_string = "DefaultEndpointsProtocol=https;AccountName=aimlloganalyticstestv1;AccountKey=8owjR6hmh9i1sb5tgntcOVhM7RDLFwMbXcFqyfTeHu2SAo3wcPkttKlhe4wdjN0Q9oQDkkixefhE+AStae87cQ==;EndpointSuffix=core.windows.net"
-container_name = "pickle-files"
-df_final = pickles_from_blob(connection_string, container_name)
- 
-Settings.llm = AzureOpenAI(
-    engine="gpt-35-turbo",
-    model="gpt-35-turbo",
-    temperature=0.0,
-azure_endpoint="https://testopenaiforrag123.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-03-15-preview",
-    api_key="1b60b8b6bdd8474381342caf30f0af14",
-    api_version="2023-07-01-preview"
-)
- 
-query_engine = PandasQueryEngine(df=df_final, synthesize_response=True, response_mode="compact")
-profanity.load_censor_words()  # Load default profanity words
- 
-chat_history = []
- 
-class PersonaAgent:
-    def __init__(self, persona):
-        self.persona = persona
- 
-    def handle_query(self, query):
-        identity_queries = ["who is this?", "who are you?", "what is your name?"]
-        help_queries = ["how can you help me?", "what can you do?", "what is your purpose?", "how can I use you?"]
-        greetings_message = ["hi", "hello", "hey", "howdy", "greetings"]
-        log_queries = [
-            "what is the total number of log entries in the dataset?",
-            "how is this number distributed across different Operation Names?",
-            "what are the Operation Names in the dataset?"
-        ]
-        
-        if query.lower() in identity_queries:
-            response = f"I am {self.persona['name']}, {self.persona['role']}. I am here to assist you with any questions or issues you may have on Azure logs😄."
-        elif query.lower() in greetings_message:
-            response = f"Hello! I am {self.persona['name']}, {self.persona['role']}. I am here to assist you with any questions or issues you may have on Azure logs😄."
-        elif query.lower() in help_queries:
-            response = (
-                "I can assist you with a variety of tasks, including answering questions, "
-                "providing information, and helping with specific tasks based on your needs. "
-                "Just let me know what you need help with, and I'll do my best to assist you."
-            )
-        elif any(q in query.lower() for q in log_queries):
-            response = "I can provide information on log entries and their distribution. Please specify the dataset or log file you're referring to."
-        else:
-            return None
-        
-        return response
- 
-persona = {
-    "name": "LogSeek - AI",
-    "role": "your personal log assistant bot"
-}
- 
-persona_agent = PersonaAgent(persona)
- 
-def my_llm_api(prompt: str = None, **kwargs) -> str:
-    if prompt:
-        chat_history.append({"role": "user", "content": prompt})
-        full_prompt = f"User: {prompt}\n"
-        for chat in chat_history:
-            full_prompt += f"{chat['role']}: {chat['content']}\n"
-        response = f"Generated response for: {prompt}"
-        chat_history.append({"role": "assistant", "content": response})
-        return response
-    return "Please provide a prompt."
- 
-def guard(func, prompt):
-    response = func(prompt=prompt)
-    validated_output = profanity.censor(response.strip())  # Apply profanity filter
-    return type("GuardRailsResponse", (object,), {"validated_output": validated_output})
- 
-def query_model(prompt):
-    persona_response = persona_agent.handle_query(prompt)
-    if persona_response:
-        output = persona_response
+    # Load the notebook
+    with open(notebook_path) as f:
+        notebook = read(f, as_version=4)
+
+    query_str_cell = f"query_str = \"{query_str}\""
+
+    # On the first run, execute the entire notebook
+    if not notebook_executed:
+        notebook.cells.insert(0, nbf.new_code_cell(query_str_cell))  # Insert query_str at the beginning
+
+        client = NotebookClient(notebook)
+        client.execute()
+
+        executed_notebook = notebook  # Store the executed notebook state
+        notebook_executed = True
+
     else:
-        response = query_engine.query(prompt).response
-        output = response
-    return output
- 
-def gradio_interface(query, history):
-    output = query_model(query)
-    words = output.split()
-    ans = ""
-    for token in words:
-        ans += " " + token
-        time.sleep(0.1)
-    yield ans
- 
-interface = gr.ChatInterface(
-    fn=gradio_interface,
-    title="LogSeek - AI",
-    description="Your personal log assistant bot."
-)
- 
-interface.launch()
+        # Reuse the executed notebook, only execute the last three cells with updated query_str
+        if executed_notebook:
+            executed_notebook.cells[-3].source = query_str_cell + "\n" + executed_notebook.cells[-3].source.split('\n', 1)[1]
+            notebook.cells[-3:] = executed_notebook.cells[-3:]  # Replace the last 3 cells
 
- 
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 8000))  # Default to 8000 if PORT is not set
-    iface.launch(server_name="0.0.0.0", server_port=port)
+            client = NotebookClient(notebook)
+            client.execute()
+
+    # Collect the output
+    output = ""
+    for cell in notebook.cells:
+        if cell.cell_type == 'code':
+            for out in cell.outputs:
+                if out.output_type == 'stream':
+                    output += out.text
+                elif out.output_type == 'execute_result':
+                    output += out.data['text/plain']
+
+    # Cache the output for the query
+    cache[query_str] = output
