@@ -62,4 +62,3 @@ jobs:
           app-name: 'codincity-logseek'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_D3E50A69E2BE438588855EC9712F959D }}
-0 comments on commit e3e27a2
